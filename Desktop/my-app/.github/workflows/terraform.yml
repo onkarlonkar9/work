@@ -1,0 +1,76 @@
+name: CD - Terraform deploy to EC2 (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Docker image tag to deploy (if blank, will try to fetch latest from Docker Hub)'
+        required: false
+        default: ''
+
+env:
+  IMAGE_REPO: onkarlonkar9/strapi-prod
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Determine image tag to deploy
+        id: determine_tag
+        run: |
+          if [ "${{ github.event.inputs.image_tag }}" != "" ]; then
+            echo "Using provided image_tag: ${{ github.event.inputs.image_tag }}"
+            echo "image_tag=${{ github.event.inputs.image_tag }}" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "No image_tag provided. Trying to fetch latest tag from Docker Hub..."
+          TOKEN_AUTH=""
+          if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_PASSWORD }}" ]; then
+            echo "Attempting authenticated API call to Docker Hub..."
+            TOKEN_AUTH=$(curl -s -H "Content-Type: application/json" -X POST -d '{"username":"'"${{ secrets.DOCKERHUB_USERNAME }}"'","password":"'"${{ secrets.DOCKERHUB_PASSWORD }}"'"}' https://hub.docker.com/v2/users/login/ | jq -r .token)
+          fi
+
+          if [ -n "$TOKEN_AUTH" ] && [ "$TOKEN_AUTH" != "null" ]; then
+            TAG=$(curl -s -H "Authorization: JWT $TOKEN_AUTH" "https://hub.docker.com/v2/repositories/${IMAGE_REPO}/tags?page_size=1&page=1&ordering=last_updated" | jq -r '.results[0].name')
+          else
+            TAG=$(curl -s "https://hub.docker.com/v2/repositories/${IMAGE_REPO}/tags?page_size=1&page=1&ordering=last_updated" | jq -r '.results[0].name')
+          fi
+
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "Failed to fetch tag from Docker Hub; defaulting to 'latest'"
+            TAG="latest"
+          fi
+
+          echo "image_tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Terraform init
+        working-directory: ./terraform
+        run: terraform init -input=false
+
+      - name: Terraform plan
+        working-directory: ./terraform
+        run: terraform plan -input=false -var="docker_image=${{ env.IMAGE_REPO }}:${{ steps.determine_tag.outputs.image_tag }}" -out=tfplan
+
+      - name: Terraform apply
+        working-directory: ./terraform
+        run: terraform apply -input=false -auto-approve tfplan
+
+      - name: Show instance public IP
+        working-directory: ./terraform
+        run: terraform output -json
