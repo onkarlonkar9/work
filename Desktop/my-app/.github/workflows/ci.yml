@@ -34,7 +34,7 @@ jobs:
 
       - name: Build, Tag, and Push Docker image
         run: |
-          docker build -t ${{ env.ECR_REPOSITORY }}:${{ env.TAG }} .
+          docker build -f Dockerfile -t ${{ env.ECR_REPOSITORY }}:${{ env.TAG }} .
           docker tag ${{ env.ECR_REPOSITORY }}:${{ env.TAG }} ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.TAG }}
           docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.TAG }}
 
